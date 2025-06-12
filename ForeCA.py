@@ -59,6 +59,10 @@ class ForeCA:
         X = np.asarray(X)
         if X.ndim != 2:
             raise ValueError("Input data must be 2-dimensional (n_samples, n_features)")
+        
+        if X.shape[0] < X.shape[1]:
+            X = X.T
+            print("Input data transposed to have n_samples >= n_features")
             
         if self.n_components > X.shape[1]:
             raise ValueError("n_components must be <= n_features")
@@ -120,7 +124,7 @@ class ForeCA:
     @staticmethod
     def _whiten(series):
         """Whiten the input data."""
-        covariance_matrix = np.cov(series.T)
+        covariance_matrix = np.cov(series, rowvar=False)
         inv_sqrt_cov = ForeCA._inverse_sqrt_matrix_eigh(covariance_matrix)
         whitened_data = series @ inv_sqrt_cov
         return whitened_data
@@ -204,10 +208,11 @@ class ForeCA:
     def _EM(data, max_iter=100, window=None, overlap=None, nfft=512, fs=1, tol=1e-10):
         """Expectation-Maximization algorithm for finding forecasting components."""
         weights = np.random.uniform(-1, 1, len(data.T))
+        weights = weights / np.linalg.norm(weights)
         entropies = []
         spectrum = ForeCA._spectrumcalc(data, window=window, overlap=overlap, nfft=nfft, fs=fs)
         h_old = 100
-        
+        print(f"Spectrum: {spectrum[0]}")
         for i in range(max_iter):
             likelihoods = np.array([weights.T @ spectrum[:,:,j] @ weights for j in range(spectrum.shape[2])])
             likelihoods /= np.sum(likelihoods)
@@ -248,7 +253,7 @@ class ForeCA:
         """Project U onto the null space of W."""
         if W.shape[0] == 0:
             return U, None
-            
+
         Wprev = W.T @ Wwhiten
         Q, _ = qr(Wprev.T, mode='full')
         Null = Q[:, Wprev.shape[0]:]
@@ -261,20 +266,24 @@ class ForeCA:
             Window = Nfft
         if Overlap is None:
             Overlap = int(Window / 2)
-            
+        series = series - series.mean(axis=0, keepdims=True)
         Sigma = np.cov(series, rowvar=False)
         D, E = eigh(Sigma)
         Wwhiten = E @ np.diag(1. / np.sqrt(D)) @ E.T
         
-        U = ForeCA._preprocessed_data(series)
+        # U = ForeCA._preprocessed_data(series)
+        U = ForeCA._whiten(series)
+        if not ForeCA._is_positive_semidefinite(U.T @ U):
+            raise ValueError("Input data covariance matrix is not positive semidefinite.")
         Uoriginal = U.copy()
-        
+        print("Whitened data:\n", U[:3,:])
         weights, _ = ForeCA._EM(U, max_iter=max_iter, tol=tol)
         weights = weights.reshape(-1, 1)
-        
+        print('weights: ', weights)
         U, Null = ForeCA._project_to_nullspace(U, weights, Wwhiten)
         weights = Wwhiten @ weights
-        weights = weights/np.linalg.norm(weights)
+        # weights = weights/np.linalg.norm(weights)
+        print(f"weights after: {weights}")
         for i in range(k-1):
             nextweight, _ = ForeCA._EM(U, max_iter=max_iter, tol=tol)
             temp = Wwhiten @ Null @ nextweight.reshape(-1, 1)
